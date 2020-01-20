@@ -1,48 +1,31 @@
 package main
 
-import "C"
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
+	"sync"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gin-gonic/gin"
 	"github.com/gocolly/colly"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"strconv"
-	"sync"
 )
 
-type Body struct {
-	Threads int      `json:"threads"`
-	Urls    []string `json:"urls"`
-}
+var JobStorage = make(JobURLImageMap)
+var JobProgressStorage = make(JobProgressMap)
+var UrlImageMapMutex = sync.RWMutex{}
+var JobProgressMapMutex = sync.RWMutex{}
+var FakeJobID = 1
 
-type jobObject map[string]map[string][]string
 
-//{
-//	"aweg-ea1ea": {
-//		"http://golang.org": {
-//			"http://gopher.png"
-//		}
-//	}
-//}
-
-var urlImageMap = make(jobObject)
-var jobProgressMap = make(map[string]int)
-
-var urlImageMapMutex = sync.RWMutex{}
-var jobProgressMapMutex = sync.RWMutex{}
-var fakeJobID = 1
-
+// Scrapes a URL recursively
 func scrape(url string, urlImageMap map[string]map[string][]string, jobID string, threads int, wg sync.WaitGroup) {
 
 	c := colly.NewCollector(
 		colly.MaxDepth(2),
 	)
 
+	// Buffered channel to limit number of goroutines
 	concurrentGoroutines := make(chan struct{}, threads)
 
 	c.OnHTML("a[href]", func(e *colly.HTMLElement) {
@@ -53,38 +36,36 @@ func scrape(url string, urlImageMap map[string]map[string][]string, jobID string
 			concurrentGoroutines <- struct{}{}
 			//time.Sleep(2 * time.Second)
 			//fmt.Println(e.Request.URL.String())
-
-			e.Request.Visit(e.Attr("href")) //todo handle error
+			e.Request.Visit(e.Attr("href"))
 			<-concurrentGoroutines
-
 		}()
-
 	})
 
 	c.OnRequest(func(r *colly.Request) {
 		currentURL := fmt.Sprintf(r.URL.String())
 		images := pullImages(currentURL, jobID)
 
-		urlImageMapMutex.Lock()
+		UrlImageMapMutex.Lock()
 		if urlImageMap[jobID] == nil {
 			urlImageMap[jobID] = map[string][]string{}
 		}
 		urlImageMap[jobID][currentURL] = images
-		urlImageMapMutex.Unlock()
+		UrlImageMapMutex.Unlock()
 	})
 
-	jobProgressMap[jobID] += 1
+	JobProgressStorage[jobID] += 1
 	c.Visit(url)
 	wg.Wait()
-	jobProgressMap[jobID] -= 1
+	JobProgressStorage[jobID] -= 1
 }
 
+// Returns slice of image links for a given URL
 func pullImages(link string, jobID string) []string {
 	var images []string
 
-	jobProgressMapMutex.Lock()
-	jobProgressMap[jobID] += 1
-	jobProgressMapMutex.Unlock()
+	JobProgressMapMutex.Lock()
+	JobProgressStorage[jobID] += 1
+	JobProgressMapMutex.Unlock()
 
 	// Make HTTP request
 	response, err := http.Get(link)
@@ -93,7 +74,7 @@ func pullImages(link string, jobID string) []string {
 		return nil
 	}
 	defer func() {
-		jobProgressMap[jobID] -= 1
+		JobProgressStorage[jobID] -= 1
 		err := response.Body.Close()
 		if err != nil {
 			log.Println(err)
@@ -114,99 +95,15 @@ func pullImages(link string, jobID string) []string {
 		}
 	})
 
-	//fmt.Println(len(images))
 	return images
 }
 
 func main() {
 	r := gin.Default()
 
-	r.GET("/status/:jobID", handleGETStatus)
-	r.GET("/result/:jobID", handleGETResult)
-	r.POST("/", handlePOST)
+	r.GET("/status/:jobID", HandleGETStatus)
+	r.GET("/result/:jobID", HandleGETResult)
+	r.POST("/", HandlePOST)
 
 	r.Run()
-}
-
-func handleGETStatus(c *gin.Context) {
-	jobID := c.Param("jobID")
-
-	// make it generic function?
-	if urlImageMap[jobID] == nil {
-		c.JSON(404, gin.H{
-			"message": "Job ID not found",
-		})
-		return
-	}
-
-	urlCount := 0
-	for range urlImageMap[jobID] {
-		urlCount += 1
-	}
-
-	c.JSON(200, gin.H{
-		"completed":  urlCount,
-		"inprogress": jobProgressMap[jobID],
-	})
-}
-
-func handleGETResult(c *gin.Context) {
-	jobID := c.Param("jobID")
-
-	if urlImageMap[jobID] == nil {
-		c.JSON(404, gin.H{
-			"message": "Job ID not found",
-		})
-		return
-	}
-
-	responses := make([]map[string][]string, 0)
-
-	for url, images := range urlImageMap[jobID] {
-		response := make(map[string][]string)
-		response[url] = images
-		responses = append(responses, response)
-	}
-
-	data, _ := json.Marshal(responses)
-	fmt.Println(string(data))
-
-	c.JSON(200, responses)
-}
-
-func handlePOST(c *gin.Context) {
-
-	rawRequestBody, _ := ioutil.ReadAll(c.Request.Body)
-	var requestBody Body
-
-	// todo disallow unknown fields
-	decoder := json.NewDecoder(bytes.NewReader(rawRequestBody))
-	err := decoder.Decode(&requestBody)
-	if err != nil {
-		c.JSON(500, gin.H{
-			"error": "Something went wrong",
-		})
-	}
-
-	//jobID := sid.IdBase32()
-	jobID := strconv.Itoa(fakeJobID)
-	fakeJobID += 1
-
-	jobProgressMap[jobID] = 0
-
-	var wg sync.WaitGroup
-
-	go func() {
-		for _, url := range requestBody.Urls {
-			scrape(url, urlImageMap, jobID, requestBody.Threads, wg)
-		}
-	}()
-
-	wg.Wait()
-
-	c.JSON(200, gin.H{
-		"jobID":   jobID,
-		"threads": requestBody.Threads,
-		"urls":    requestBody.Urls,
-	})
 }
