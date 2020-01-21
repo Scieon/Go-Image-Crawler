@@ -76,17 +76,23 @@ func HandlePOST(c *gin.Context) {
 
 	jobID := sid.IdBase32()
 
+	threads := requestBody.Threads
+
+	if threads <= 0 {
+		threads = 1
+	}
+
 	JobProgressStorage[jobID] = 0
 
 	go func() {
 		for _, url := range requestBody.Urls {
-			scrape(url, JobStorage, jobID, requestBody.Threads)
+			scrape(url, JobStorage, jobID, threads)
 		}
 	}()
 
 	c.JSON(200, gin.H{
 		"jobID":   jobID,
-		"threads": requestBody.Threads,
+		"threads": threads,
 		"urls":    requestBody.Urls,
 	})
 }
