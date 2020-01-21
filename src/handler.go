@@ -5,18 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"strconv"
-	"sync"
 
+	"github.com/chilts/sid"
 	"github.com/gin-gonic/gin"
 )
 
 var error404 = "JobID not found"
 
+// HandleGETStatus is a route handler the status of a crawler job
 func HandleGETStatus(c *gin.Context) {
 	jobID := c.Param("jobID")
 
-	// make it generic function?
 	if JobStorage[jobID] == nil {
 		c.JSON(404, gin.H{
 			"message": error404,
@@ -35,6 +34,7 @@ func HandleGETStatus(c *gin.Context) {
 	})
 }
 
+// HandleGETResult is a route handler that returns result of a crawler job
 func HandleGETResult(c *gin.Context) {
 	jobID := c.Param("jobID")
 
@@ -59,6 +59,7 @@ func HandleGETResult(c *gin.Context) {
 	c.JSON(200, responses)
 }
 
+// HandlePOST is a route handler that triggers a new crawler job
 func HandlePOST(c *gin.Context) {
 	rawRequestBody, _ := ioutil.ReadAll(c.Request.Body)
 	var requestBody RequestBody
@@ -73,21 +74,15 @@ func HandlePOST(c *gin.Context) {
 		return
 	}
 
-	//jobID := sid.IdBase32()
-	jobID := strconv.Itoa(FakeJobID)
-	FakeJobID += 1
+	jobID := sid.IdBase32()
 
 	JobProgressStorage[jobID] = 0
 
-	var wg sync.WaitGroup
-
 	go func() {
 		for _, url := range requestBody.Urls {
-			scrape(url, JobStorage, jobID, requestBody.Threads, wg)
+			scrape(url, JobStorage, jobID, requestBody.Threads)
 		}
 	}()
-
-	wg.Wait()
 
 	c.JSON(200, gin.H{
 		"jobID":   jobID,

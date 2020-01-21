@@ -11,15 +11,32 @@ import (
 	"github.com/gocolly/colly"
 )
 
+// JobStorage is the in memory storage of jobs, urls scraped, and images found
 var JobStorage = make(JobURLImageMap)
-var JobProgressStorage = make(JobProgressMap)
-var UrlImageMapMutex = sync.RWMutex{}
-var JobProgressMapMutex = sync.RWMutex{}
-var FakeJobID = 1
 
+// JobProgressStorage is the in memory storage to keep track of number of running processes
+var JobProgressStorage = make(JobProgressMap)
+
+// URLImageMapMutex locks the Job Storage for concurrent writes
+var URLImageMapMutex = sync.RWMutex{}
+
+// JobProgressMapMutex locks the JobProgress storage for concurrent writes
+var JobProgressMapMutex = sync.RWMutex{}
+
+func main() {
+	r := gin.Default()
+
+	r.GET("/status/:jobID", HandleGETStatus)
+	r.GET("/result/:jobID", HandleGETResult)
+	r.POST("/", HandlePOST)
+
+	r.Run()
+}
 
 // Scrapes a URL recursively
-func scrape(url string, urlImageMap map[string]map[string][]string, jobID string, threads int, wg sync.WaitGroup) {
+func scrape(url string, urlImageMap map[string]map[string][]string, jobID string, threads int) {
+
+	var wg sync.WaitGroup
 
 	c := colly.NewCollector(
 		colly.MaxDepth(2),
@@ -34,8 +51,6 @@ func scrape(url string, urlImageMap map[string]map[string][]string, jobID string
 		go func() {
 			defer wg.Done()
 			concurrentGoroutines <- struct{}{}
-			//time.Sleep(2 * time.Second)
-			//fmt.Println(e.Request.URL.String())
 			e.Request.Visit(e.Attr("href"))
 			<-concurrentGoroutines
 		}()
@@ -45,18 +60,18 @@ func scrape(url string, urlImageMap map[string]map[string][]string, jobID string
 		currentURL := fmt.Sprintf(r.URL.String())
 		images := pullImages(currentURL, jobID)
 
-		UrlImageMapMutex.Lock()
+		URLImageMapMutex.Lock()
 		if urlImageMap[jobID] == nil {
 			urlImageMap[jobID] = map[string][]string{}
 		}
 		urlImageMap[jobID][currentURL] = images
-		UrlImageMapMutex.Unlock()
+		URLImageMapMutex.Unlock()
 	})
 
-	JobProgressStorage[jobID] += 1
+	JobProgressStorage[jobID]++
 	c.Visit(url)
 	wg.Wait()
-	JobProgressStorage[jobID] -= 1
+	JobProgressStorage[jobID]--
 }
 
 // Returns slice of image links for a given URL
@@ -64,7 +79,7 @@ func pullImages(link string, jobID string) []string {
 	var images []string
 
 	JobProgressMapMutex.Lock()
-	JobProgressStorage[jobID] += 1
+	JobProgressStorage[jobID]++
 	JobProgressMapMutex.Unlock()
 
 	// Make HTTP request
@@ -74,7 +89,7 @@ func pullImages(link string, jobID string) []string {
 		return nil
 	}
 	defer func() {
-		JobProgressStorage[jobID] -= 1
+		JobProgressStorage[jobID]--
 		err := response.Body.Close()
 		if err != nil {
 			log.Println(err)
@@ -96,14 +111,4 @@ func pullImages(link string, jobID string) []string {
 	})
 
 	return images
-}
-
-func main() {
-	r := gin.Default()
-
-	r.GET("/status/:jobID", HandleGETStatus)
-	r.GET("/result/:jobID", HandleGETResult)
-	r.POST("/", HandlePOST)
-
-	r.Run()
 }
