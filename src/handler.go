@@ -26,7 +26,7 @@ func HandleGETStatus(c *gin.Context) {
 
 	urlCount := 0
 	for range JobStorage[jobID] {
-		urlCount += 1
+		urlCount++
 	}
 
 	c.JSON(200, gin.H{
